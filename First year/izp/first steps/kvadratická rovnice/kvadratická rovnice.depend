@@ -1,0 +1,6 @@
+# depslib dependency file v1.0
+1633882858 source:d:\škola\_programy\kvadratická rovnice\main.c
+	<stdio.h>
+	<stdlib.h>
+	<math.h>
+
