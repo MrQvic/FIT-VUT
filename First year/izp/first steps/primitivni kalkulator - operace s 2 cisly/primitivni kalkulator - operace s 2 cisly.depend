@@ -1,0 +1,5 @@
+# depslib dependency file v1.0
+1632734051 source:d:\škola\_programy\primitivni kalkulator - operace s 2 cisly\main.c
+	<stdio.h>
+	<stdlib.h>
+

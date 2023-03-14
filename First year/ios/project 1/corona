@@ -1,0 +1,386 @@
+#!/bin/sh
+
+export POSIXLY_CORRECT=yes
+export LC_NUMERIC=en_US.UTF-8
+export LC_ALL=C
+
+send_help()
+{
+    echo "Usage:    corona [-h] [FILTERS] [COMMAND] [LOG [LOG2 [...]]"
+    echo ""
+    echo "  [-h]            --help"
+    echo "  [-a]            --after     use records AFTER this date, format YYYY-MM-DD"
+    echo "  [-b]            --before    use records BEFORE this date, format YYYY-MM-DD"
+    echo "  [-g]            --gender    use records of 1 GENDER only (M = male, Z = female)"
+    echo "  [-s [WIDTH]]                show histogram of commands: gender, age, daily, monthly, yearly, countries, districts a regions."
+    echo "                              optional param WIDTH sets histogram width (positive number)"
+}
+check_date()
+{
+    if echo "$1" | grep -Eq "^(1[9][7-9][0-9]|[2-9][0-9][0-9][0-9])-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])$"; then
+        #valid
+        return 0
+    else 
+        #not valid
+        return 1
+    fi
+}
+
+check_if_num()
+{
+    if echo "$1" | grep -Eq "^[1-9][0-9]+|[1-9]$"; then
+        #valid
+        return 0
+    else
+        #invalid
+        return 1
+    fi
+}
+
+#variable def
+FILE_INPUT=""
+FLAG_INPUT="0"
+FLAG_GRAPH="0"
+AFTER_DATE_INFO=""
+AFTER_DATE="1970-01-01"
+BEFORE_DATE_INFO=""
+BEFORE_DATE="9999-99-99"
+COMMAND="merge"
+GENDER_FILTER=""
+
+#input commands check
+while [ "$#" -gt 0 ]; do
+    case "$1" in 
+        infected | merge | gender | age | daily | monthly | yearly | countries | districts | regions) #possible commands
+            COMMAND="$1"
+            shift
+            ;;
+        -h) 
+            send_help
+            exit 0
+            ;;
+        -a)
+            shift
+            AFTER_DATE="$1"
+            if check_date "$@"; then    #=date is valid case
+                AFTER_DATE_INFO="1"
+                shift
+            else                        #=date is invalid case
+                AFTER_DATE="1970-01-01"
+                echo "Invalid date format! Use YYYY-MM-DD"
+                exit 1
+            fi
+            ;;
+        -b)
+            shift
+            if check_date "$@"; then    #=date is valid case
+                BEFORE_DATE_INFO="1"
+                BEFORE_DATE="$1"
+                shift
+            else                        #=date is invalid case
+                BEFORE_DATE="9999-99-99"
+                echo "Invalid date format! Use YYYY-MM-DD"
+                exit 1
+            fi
+            ;;
+        -g)                             #filter for gender
+            shift
+            GENDER_FILTER="$1"
+            if [ "$GENDER_FILTER" = "M" ] || [ "$GENDER_FILTER" = "Z" ]; then   #check if gender filter is correct (Z/M)
+                shift
+            else
+                GENDER_FILTER=""
+            fi
+            ;;
+        -s)                             #display graph
+            FLAG_GRAPH="1"
+            shift
+            if check_if_num "$@"; then  #=number is valid
+                GRAPH_WIDTH="$1"
+                shift
+            else                        #=number is invalid
+                GRAPH_WIDTH=""                #TODO!! 
+            fi
+            ;;
+        *.csv)                          #case for .csv files
+            FLAG_INPUT="1"
+            if [ "$FILE_INPUT" = "" ]; then 
+                FILE_INPUT="$FILE_INPUT$(cat "$1")"  
+            else
+                FILE_INPUT="$FILE_INPUT
+$(cat "$1")"
+            fi
+            shift
+            ;;
+        *.gz)                           #case for gzip files
+            FLAG_INPUT="1"
+            if [ "$FILE_INPUT" = "" ]; then
+                FILE_INPUT="$FILE_INPUT$(gzip -d -c "$1")"
+            else
+                FILE_INPUT="$FILE_INPUT
+$(gzip -d -c "$1")"
+            fi
+            shift
+            ;;
+        *.bz2)                          #case for bzip files
+            FLAG_INPUT="1"
+            if [ "$FILE_INPUT" = "" ]; then
+                FILE_INPUT="$FILE_INPUT$(bzip2 -d -c "$1")"
+            else
+                FILE_INPUT="$FILE_INPUT
+$(gzip -d -c "$1")"
+            fi
+            shift
+            ;;   
+        *)
+            echo "Wrong argument on input!"
+            shift
+            exit 1
+            ;;
+    esac
+done
+
+#if there is not any file, read from stdin
+if [ $FLAG_INPUT = "0" ]; then
+    FILE_INPUT=$(cat)
+else
+    :
+fi
+
+if [ -z "$FILE_INPUT" ]; then       #if input file is empty, print only HF and exit
+    echo "id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs"
+    exit 0
+else                                #if input file is not empty, continue
+    :
+fi
+
+######################################################################################################################
+
+#Filter HEADS and prepare INPUT file
+HEAD_OF_FILE="$( echo "$FILE_INPUT" | head -n 1 )"                                                                      #save headfile for for next usage
+
+FILE_INPUT=$(echo "$FILE_INPUT" | awk -F, "-vHEAD_OF_FILE=$HEAD_OF_FILE" '$0 != HEAD_OF_FILE { print $0}')              #delete all HFs
+
+HEAD_OF_FILE="id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs"  #Hard define our new headfile
+
+FILE_INPUT="$HEAD_OF_FILE
+$FILE_INPUT"
+
+######################################################################################################################
+
+#AGE and DATE validation
+ERRORS_FROM_FILE=$(echo "$FILE_INPUT" | tail -n +2 | grep '[^[:space:]]' |  sed 's/ //g' | awk -F, '{if ($3 == "") {next;} 
+                else if ($2 !~ "^(1[9][7-9][0-9]|[2-9][0-9][0-9][0-9])-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])$") {print "Invalid date: " $0;}\
+                else if ($3 !~ "^([0]|[1-9]+|[1-9]+[0-9]+)$") {print "Invalid age: " $0;}}')
+
+if [ "$ERRORS_FROM_FILE" != "" ];then
+    echo "$ERRORS_FROM_FILE" | awk '{print $0  > "/dev/stderr"}'
+fi
+
+FILE_INPUT=$(echo "$FILE_INPUT" | tail -n +2 | grep '[^[:space:]]' | sed 's/ //g' | awk -F, \
+            '{if ($3 ~ "^([0]|[1-9]+|[1-9]+[0-9]+)$" && $2 ~ "^(1[9][7-9][0-9]|[2-9][0-9][0-9][0-9])-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])$") {print $0;}
+            else if ($3 == "") {print $0;}}')
+
+FILE_INPUT="$HEAD_OF_FILE
+$FILE_INPUT"
+
+######################################################################################################################
+
+#FILTERS
+
+#GRAPH FILTER
+if [ "$FLAG_GRAPH" != "0" ] && [ "$GRAPH_WIDTH" = "" ];then
+    GRAPH_WIDTH_GENDER="100000"
+    GRAPH_WIDTH_AGE="10000"
+    GRAPH_WIDTH_DAILY="500"
+    GRAPH_WIDTH_MONTHLY="10000"
+    GRAPH_WIDTH_YEARLY="100000"
+    GRAPH_WIDTH_COUNTRIES="100"
+    GRAPH_WIDTH_DISTRICTS="1000"
+    GRAPH_WIDTH_REGIONS="10000"
+elif [ "$FLAG_GRAPH" != "0" ] && [ "$GRAPH_WIDTH" != "" ];then
+    GRAPH_WIDTH_GENDER="$GRAPH_WIDTH"
+    GRAPH_WIDTH_AGE="$GRAPH_WIDTH"
+    GRAPH_WIDTH_DAILY="$GRAPH_WIDTH"
+    GRAPH_WIDTH_MONTHLY="$GRAPH_WIDTH"
+    GRAPH_WIDTH_YEARLY="$GRAPH_WIDTH"
+    GRAPH_WIDTH_COUNTRIES="$GRAPH_WIDTH"
+    GRAPH_WIDTH_DISTRICTS="$GRAPH_WIDTH"
+    GRAPH_WIDTH_REGIONS="$GRAPH_WIDTH"
+fi
+
+#DATE (AFTER/BEFORE) FILTER
+if [ "$AFTER_DATE_INFO" != "0" ] && [ "$BEFORE_DATE_INFO" = "0" ]; then
+    FILE_INPUT=$(echo "$FILE_INPUT" | tail -n +2 | awk -F, -vAFTER_DATE=$AFTER_DATE '$2 >= AFTER_DATE {print $0}')
+    FILE_INPUT="$HEAD_OF_FILE
+$FILE_INPUT"
+elif [ "$AFTER_DATE_INFO" = "0" ] && [ "$BEFORE_DATE_INFO" != "0" ]; then
+    FILE_INPUT=$(echo "$FILE_INPUT" | tail -n +2 | awk -F, -vBEFORE_DATE=$BEFORE_DATE '$2 <= BEFORE_DATE {print $0}')
+    FILE_INPUT="$HEAD_OF_FILE
+$FILE_INPUT"
+elif [ "$BEFORE_DATE_INFO" != "0" ] && [ "$AFTER_DATE_INFO" != "0" ]; then
+    FILE_INPUT=$(echo "$FILE_INPUT" | tail -n +2 | awk -F, -vBEFORE_DATE=$BEFORE_DATE -vAFTER_DATE=$AFTER_DATE '{if ($2 <= BEFORE_DATE && $2 >= AFTER_DATE) {print $0}}')
+    FILE_INPUT="$HEAD_OF_FILE
+$FILE_INPUT"
+else
+    :
+fi
+
+#GENDER FILTER
+if [ "$GENDER_FILTER" = "Z" ]; then
+    FILE_INPUT=$(echo "$FILE_INPUT" | tail -n +2 | awk -F, '$4 == "Z"')  #if filter is set to Z, delete all M
+    FILE_INPUT="$HEAD_OF_FILE
+$FILE_INPUT"
+elif [ "$GENDER_FILTER" = "M" ]; then
+    FILE_INPUT=$(echo "$FILE_INPUT" | tail -n +2 | awk -F, '$4 == "M"')  #if filter is set to M, delete all Z
+    FILE_INPUT="$HEAD_OF_FILE
+$FILE_INPUT"
+else
+    :
+fi
+
+
+######################################################################################################################
+
+#COMMANDS
+
+#merge COMMAND
+if [ $COMMAND = "merge" ]; then
+    echo "$FILE_INPUT"
+else
+    :
+fi 
+
+#infected COMMAND
+if [ $COMMAND = "infected" ]; then
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, 'END{ print NR }'
+else
+    :
+fi
+
+#gender COMMAND
+if [ $COMMAND = "gender" ] && [ "$FLAG_GRAPH" = "0" ]; then
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, '{if ($4 == "M") { M++; }} {if ($4 == "Z") { Z++; }} END{ print "M: "M;print "Z: "Z }'
+elif [ $COMMAND = "gender" ] && [ "$FLAG_GRAPH" != "0" ]; then
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, "-vX=$GRAPH_WIDTH_GENDER" '{if ($4 == "M") { M++; }} {if ($4 == "Z") { Z++; }} END{KRIZKY=sprintf("M:%"M/X"s", ""); gsub(" ", "#", KRIZKY); print KRIZKY; KRIZKY=sprintf("Z:%"Z/X"s", ""); gsub(" ", "#", KRIZKY); print KRIZKY}'
+fi
+
+#age COMMAND
+if [ $COMMAND = "age" ]; then
+    #A=0-5      G=56-65     N=none
+    #B=6-15     H=66-75
+    #C=16-25    I=76-85
+    #D=26-35    J=86-95
+    #E=36-45    K=96-105
+    #F46-55     L= >105
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, \
+                -v A="0" \
+                -v B="0" \
+                -v C="0" \
+                -v D="0" \
+                -v E="0" \
+                -v F="0" \
+                -v G="0" \
+                -v H="0" \
+                -v I="0" \
+                -v J="0" \
+                -v K="0" \
+                -v L="0" \
+                -v N="0" \
+                '{if ($3 < 6 && $3 >= 0) { A++; } 
+                else if ($3 < 16 && $3 >= 6) { B++; }\
+                else if ($3 < 26 && $3 >= 16) { C++; }\
+                else if ($3 < 36 && $3 >= 26) { D++; }\
+                else if ($3 < 46 && $3 >= 36) { E++; }\
+                else if ($3 < 56 && $3 >= 46) { F++; }\
+                else if ($3 < 66 && $3 >= 56) { G++; }\
+                else if ($3 < 76 && $3 >= 66) { H++; }\
+                else if ($3 < 86 && $3 >= 76) { I++; }\
+                else if ($3 < 96 && $3 >= 86) { J++; }\
+                else if ($3 < 106 && $3 >= 96) { K++; }\
+                else if ($3 > 105) { L++; }\
+                else if ($3 < 0){ N++; }}\
+                END{
+                    print "0-5   : "A;
+                    print "6-15  : "B;
+                    print "16-25 : "C;
+                    print "26-35 : "D;
+                    print "36-45 : "E;
+                    print "46-55 : "F;
+                    print "56-65 : "G;
+                    print "66-75 : "H;
+                    print "76-85 : "I;
+                    print "86-95 : "J;
+                    print "96-105: "K;
+                    print ">105  : "L;
+                    if (N > 0) {print "None  : "N;}}'              
+else
+    :
+fi
+
+#daily COMMAND
+if [ $COMMAND = "daily" ]; then
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, '{infected[$2] = infected[$2]+1 } END{for (day in infected) {print day":", infected[day];}}' | sort
+else                                           #for each unique $2 string add 1 into its variable, then print each unique string and variable number, then sort
+    :
+fi
+
+#regions COMMAND
+if [ $COMMAND = "regions" ]; then
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, \
+    '{infected[$5] = infected[$5]+1 } 
+    END{for (region in infected) 
+    {if (region == "") {print "None:", infected[region];} 
+    else {print region":", infected[region];}}}' | sort
+    #same as daily command, but checks for empty region column and print it as None:
+else
+    :
+fi
+
+#districts COMMAND
+if [ $COMMAND = "districts" ]; then
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, \
+    '{infected[$6] = infected[$6]+1 } 
+    END{for (district in infected) 
+    {if (district == "") {print "None:", infected[region];} 
+    else {print district":", infected[district];}}}' | sort
+else
+    :
+fi
+
+#countries COMMAND
+if [ $COMMAND = "countries" ]; then
+    echo "$FILE_INPUT" | tail -n +2 | awk -F, \
+    '{infected[$8] = infected[$8]+1 } 
+    END{for (country in infected) 
+    {if (country == "" || country == "CZ") {} 
+    else {print country":", infected[country];}}}' | sort
+else
+    :
+fi
+
+#yearly COMMAND
+if [ $COMMAND = "yearly" ]; then
+    DATES=$(echo "$FILE_INPUT" | tail -n +2 | awk -F, '{print $2}')
+    echo "$DATES" | awk -F- '{infected[$1] = infected[$1]+1 } END{for (year in infected) {print year":", infected[year];}}' | sort
+else
+    :
+fi
+
+#monthly COMMAND
+if [ $COMMAND = "monthly" ]; then
+    DATES=$(echo "$FILE_INPUT" | tail -n +2 | awk -F, '{print $2}')
+    MONTHS=$(echo "$DATES" | awk -F"-" '{print $1"/"$2}')
+    echo "$MONTHS" | awk '{infected[$1] = infected[$1]+1 } END{for (month in infected) {print month":", infected[month];}}' | sort
+else
+    :
+fi
+
+
+#TODO
+#COMMANDS - DONE
+#FILTERS - -s
+
+#DONE
+#COMMANDS - merge, infected, gender, age, daily, regions, districts, countries, monthly, yearly, 
+#FILTERS - -g, -a, -b
